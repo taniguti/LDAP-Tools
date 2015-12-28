@@ -1,0 +1,144 @@
+#!/usr/bin/perl
+
+use strict;
+use warnings;
+use utf8;
+use Net::LDAP;
+use Net::LDAP::Control::Paged;
+use Net::LDAP::Constant qw( LDAP_CONTROL_PAGED );
+
+my $Debug = 0;
+
+# Default Values
+#my $WID = `uuidgen`;
+my $AD_INFO = "$ENV{HOME}/etc/ad_access.conf";
+# $AD_INFO has Shell like defines.
+# ---------------------------------------------
+# ADC_SERVER="dc01.vmnet3.local"
+# LDAPPORT=389
+# DELEGATEUSER='you@vmnet3.local'
+# DELEGATEUSERPASS='password0-'
+# SEARCHBASE="OU=VMNET3,DC=vmnet3,DC=local"
+# SEARCHBASE="OU=VMNET3USERS,OU=VMNET3,DC=vmnet3,DC=local"
+# ---------------------------------------------
+
+# userAccountControl
+my $ACTIVE_ACCOUNT = 66048;
+my $INACTIVE_ACCOUNT = 66050;
+my @ATTRIBUTES = ("sAMAccountName", "userAccountControl", "uidNumber");
+my $page = Net::LDAP::Control::Paged->new(size => 1000) or die $!;
+
+my (
+    %AD_ACCESS_INFO,
+    @ad_ip_addresses,
+    $ldap,
+    $portnum,
+    $conn,    
+    @search_args,
+    $resp,
+    $cookie,
+    $record,
+    %account_info,
+);
+
+# Read information file: AD-INFO
+open (AD, "< $AD_INFO") or die "Can't open file $AD_INFO. : $!";
+while (<AD>){
+    chomp;
+    s/^\s+//;
+    s/^#.*//;
+    s/\s+$//;
+    next unless length;
+    my ($var, $value) = split (/\s*=\s*/, $_, 2);
+    $value =~ s/['"]//g;
+    $AD_ACCESS_INFO{$var} = $value ;
+}
+close (AD);
+
+exists $AD_ACCESS_INFO{ADC_SERVER}       or die "Humm, No Domain Controller server got. : $!";
+exists $AD_ACCESS_INFO{LDAPPORT}         or die "Humm, No ldap port got. : $!";
+exists $AD_ACCESS_INFO{DELEGATEUSER}     or die "Humm, No ldap access user got. : $!";
+exists $AD_ACCESS_INFO{DELEGATEUSERPASS} or die "Tell me ldap access pass code. : $!";
+exists $AD_ACCESS_INFO{SEARCHBASE}       or die "Tell me ldap search base. : $!";
+
+if ( $Debug ) {
+    print STDERR "AD_INFO:File path         : $AD_INFO\n";
+    print STDERR "AD_INFO:Domain Controller : $AD_ACCESS_INFO{ADC_SERVER}\n";
+    print STDERR "AD_INFO:LDAP Port number  : $AD_ACCESS_INFO{LDAPPORT}\n";
+    print STDERR "AD_INFO:Delegate user     : $AD_ACCESS_INFO{DELEGATEUSER}\n";
+    print STDERR "AD_INFO:Delegate user pass: $AD_ACCESS_INFO{DELEGATEUSERPASS}\n";
+    print STDERR "AD_INFO:Search base       : $AD_ACCESS_INFO{SEARCHBASE}\n";
+}
+
+#my $FILTER = "(&(objectclass=person)(memberOf:1.2.840.113556.1.4.1941:=$VN))";
+#my $FILTER = "(&(objectClass=person)(!(userAccountControl:1.2.840.113556.1.4.803:=2))(!(objectClass=computer)))";
+my $FILTER = "(&(objectclass=person)(sAMAccountType=805306368))";
+#my $FILTER = "(&(objectclass=person))";
+if ( $Debug ){ print STDERR "Filter:  $FILTER\n"; }
+
+@search_args = (
+    base => $AD_ACCESS_INFO{SEARCHBASE}, 
+    filter => $FILTER,
+    scope => 'sub',
+    pagesize => 1000,
+    control => [$page]
+);
+
+# Get IP address of Domain controller
+@ad_ip_addresses = &get_address_from_hostname($AD_ACCESS_INFO{ADC_SERVER});
+if ( $Debug ){ print STDERR "IP Addr: $ad_ip_addresses[0]\n"; }
+
+
+# Get entries
+$ldap = Net::LDAP->new($ad_ip_addresses[0], port=>$portnum ) 
+        or die "Failed to new ldap access to $AD_ACCESS_INFO{ADC_SERVER}.: $!";
+$conn = $ldap->bind( $AD_ACCESS_INFO{DELEGATEUSER}, password=>$AD_ACCESS_INFO{DELEGATEUSERPASS} )
+        or die "Failed to bind to ldap server $ad_ip_addresses[0]: $!";
+if ($conn->code) { die $conn->error; }
+
+while (1) {
+    $conn = $ldap->search( @search_args );
+    foreach $record ($conn->entries) {
+        $account_info{name} =  $record->get_value('sAMAccountName');
+        if ( $record->get_value('uidNumber') ) {
+            $account_info{uid} =  $record->get_value('uidNumber');
+        }else{
+            print STDERR "Skipped: $account_info{name}\n" if ( $Debug );
+            next;
+        }
+        $account_info{state} = "inactive" if ($record->get_value('userAccountControl') == $INACTIVE_ACCOUNT);
+        $account_info{state} = "active" if ($record->get_value('userAccountControl') == $ACTIVE_ACCOUNT);
+    
+        print "$account_info{name},$account_info{uid},$account_info{state}\n"; 
+     }
+
+    $resp = $conn->control(LDAP_CONTROL_PAGED) or last;
+    $cookie = $resp->cookie or last;
+    $page->cookie($cookie);
+}
+
+if($cookie) {
+    print "Abnormal exit\n";
+    $page->cookie($cookie);
+    $page->size(0);
+    $ldap->search(@search_args);
+}
+
+$ldap->unbind;
+
+
+####################################
+# Get IPv4 addresses from hostname
+####################################
+sub get_address_from_hostname (){
+    my (@attrs, $i, @ips);
+
+    @attrs = gethostbyname($_[0]);
+    shift @attrs; shift @attrs;
+    shift @attrs; shift @attrs;
+
+    for ($i = 0; $i <= $#attrs; $i++){  
+        push @ips, (join '.' , unpack ('C4', $attrs[$i])); 
+    }
+    return @ips;
+}

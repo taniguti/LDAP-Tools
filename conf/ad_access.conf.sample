@@ -1,0 +1,5 @@
+ADC_SERVER="your.ad-domain.server"
+LDAPPORT=389
+DELEGATEUSER='you@ad-domain.sever'
+DELEGATEUSERPASS='secret_password'
+SEARCHBASE="OU=orgunit,DC=ad-domain,DC=server"
