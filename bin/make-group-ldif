@@ -1,0 +1,24 @@
+#!/bin/sh
+
+if [ $# -eq 0 ]; then 
+	echo "Use: $0 groupname groupname ...."
+	exit 0
+fi
+
+cat << _LDIF
+dn: ou=Groups,
+objectClass: organizationUnit
+ou: Groups
+
+_LDIF	
+
+for g in $@
+do
+	cat << _LDIF
+dn: cn=$g,ou=Groups,
+objectClass: posixGroup
+cn: $g
+gidNumber: 10001
+_LDIF	
+
+done
