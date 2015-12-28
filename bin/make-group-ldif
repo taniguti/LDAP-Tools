@@ -5,20 +5,22 @@ if [ $# -eq 0 ]; then
 	exit 0
 fi
 
-cat << _LDIF
-dn: ou=Groups,
-objectClass: organizationUnit
-ou: Groups
+if [ `whoami` != 'root' ]; then
+	echo "Use with sudo."
+	exit 0
+fi
 
-_LDIF	
+BaseSuffix=`ldapsearch -Y EXTERNAL -LLL -H ldapi:/// -b olcDatabase={2}hdb,cn=config olcSuffix 2> /dev/null | grep olcSuffix | awk  {'print $2}'`
+OU="ou=Group,$BaseSuffix"
 
 for g in $@
 do
 	cat << _LDIF
-dn: cn=$g,ou=Groups,
+dn: cn=$g,$OU
 objectClass: posixGroup
 cn: $g
-gidNumber: 10001
-_LDIF	
+gidNumber: 10000
+
+_LDIF
 
 done
